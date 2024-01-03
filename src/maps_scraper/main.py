@@ -255,6 +255,30 @@ class GMapsPlacesCrawler:
             # If the image is not found, return an empty string
             return ""
         
+    def get_all_review_details_js(self, driver, reviews_container):
+        """
+        Use JavaScript to extract all review details (name, rating, time, content) 
+        for all reviews in the container.
+        Returns a list of dictionaries containing these details.
+        """
+        script = """
+        var reviews = arguments[0].querySelectorAll('div[data-review-id]');
+        var reviewDetails = [];
+        reviews.forEach(function(review) {
+            var reviewerName = review.getAttribute('aria-label');
+            var ratingSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(1) > span:nth-child(1)');
+            var rating = ratingSpan ? ratingSpan.getAttribute('aria-label') : '';
+            var reviewTimeSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(1) > span:nth-child(2)');
+            var reviewTime = reviewTimeSpan ? reviewTimeSpan.innerText.trim() : '';
+            var contentSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(2) > div > span');
+            var content = contentSpan ? contentSpan.innerText.trim() : '';
+            reviewDetails.push({reviewerName, rating, reviewTime, content});
+        });
+        return reviewDetails;
+        """
+        return driver.execute_script(script, reviews_container) 
+        
+        
     def get_review(self, aria_label: str) -> tuple[str, str]:
         reviews = []
         rate = ""
@@ -298,19 +322,17 @@ class GMapsPlacesCrawler:
             reviews_container = find_scrollable_container().find_element(By.XPATH, "./div[8]")
             review_elements = reviews_container.find_elements(By.XPATH, "./div[@data-review-id]")
             
-            for i, review in enumerate(review_elements):
+            # Use JavaScript to get all review details at once
+            review_details = self.get_all_review_details_js(driver, reviews_container)
+            
+            for i, detail in enumerate(review_details):
                 try:
-                    reviewer_name = review.get_attribute("aria-label")
-                    rating = review.find_element(By.XPATH, "./div/div/div[4]/div[1]/span[1]").get_attribute("aria-label")
-                    review_time = review.find_element(By.XPATH, "./div/div/div[4]/div[1]/span[2]").text.strip()
+                    # Extract each detail from the JavaScript output
+                    reviewer_name = detail['reviewerName']
+                    rating = detail['rating']
+                    review_time = detail['reviewTime']
+                    review_content = detail['content']
                     
-                    # Check if review content is available
-                    review_content_elements = review.find_elements(By.XPATH, "./div/div/div[4]/div[2]/div/span")
-                    
-                    if review_content_elements:
-                        review_content = review_content_elements[0].text.strip()
-                    else:
-                        review_content = ""
                     
                     reviews.append({
                         "reviewer_name": reviewer_name,
