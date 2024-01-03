@@ -7,6 +7,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from maps_scraper.drivers import create_driver
+from maps_scraper.entities import Place
+from maps_scraper.config import settings
+
 from selenium.common.exceptions import TimeoutException
 from selenium.common.exceptions import NoSuchElementException
 
@@ -168,7 +171,10 @@ class GMapsPlacesCrawler:
             "reviews": reviews
         }
         
-        logger.info(place)
+        place_log = Place(place_name, address, business_hours, phone_number, photo_link, rate, reviews)
+        logger.info(place_log)
+        
+        
         return place
         
     def wait_place_detail_shows(self, aria_label: str):
@@ -312,7 +318,7 @@ class GMapsPlacesCrawler:
                         "review_content": review_content
                     })
                     
-                    # logging.info(f"Processed review {i+1}/{len(review_elements)}")
+                    logging.info(f"Processed review {i+1}/{len(review_elements)}")
                     
                 except NoSuchElementException as e:
                     logging.warning(f"An error with review {i+1} was found. Skipping this review. {e}. ")
@@ -324,11 +330,12 @@ class GMapsPlacesCrawler:
         except Exception as e:
             logging.error("An error occurred: {}".format(e))
 
-        # logging.info("Completed getting reviews. Total reviews: {}".format(len(reviews)))
+        logging.info("Completed getting reviews. Total reviews: {}".format(len(reviews)))
         return rate, reviews
 
 if __name__ == "__main__": 
-    logger.info("[bold yellow]== * Running Gmaps Crawler ==[/]", extra={"markup": True})
+    logger.info("[bold yellow]== * Running Gmaps Scraper ==[/]", extra={"markup": True})
+    logger.info("[yellow]Settings:[/yellow] %s", settings.dict(), extra={"markup": True})
     driver = create_driver()
     driver.get(FINAL_URL)
 
