@@ -83,7 +83,8 @@ class GMapsNavigator:
                     aria_labels = div.find_elements(By.CSS_SELECTOR, "a[aria-label]")
                     if aria_labels:
                         aria_label = aria_labels[0].get_attribute("aria-label")
-                        self.place_labels.append(aria_label)
+                        escaped_aria_label = aria_label.replace("'", "\\'").replace('"', '\\"').replace("\\", "\\\\")  # Escape quotes
+                        self.place_labels.append(escaped_aria_label)
                     
         except Exception as e:
             logger.error(f"Error capturing place labels: {e}")
