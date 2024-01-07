@@ -54,8 +54,8 @@ class GMapsNavigator:
             
             last_height = self.driver.execute_script("return arguments[0].scrollHeight", places_wrapper)
             
-            scroll_count = 0  # Counter to limit the number of scrolls
-            max_scrolls = 4   # Maximum number of scrolls for testing; adjust as needed
+            # scroll_count = 0  # Counter to limit the number of scrolls
+            # max_scrolls = 4   # Maximum number of scrolls for testing; adjust as needed
             
             while True:
                 self.driver.execute_script("arguments[0].scrollTo(0, arguments[0].scrollHeight);", places_wrapper)
@@ -68,10 +68,10 @@ class GMapsNavigator:
 
                 new_height = self.driver.execute_script("return arguments[0].scrollHeight", places_wrapper)
                 # or scroll_count >= max_scrolls
-                if new_height == last_height or scroll_count >= max_scrolls: 
+                if new_height == last_height: 
                     break
                 last_height = new_height
-                scroll_count += 1
+                # scroll_count += 1
                 
             # Now scroll back to the top
             self.driver.execute_script("arguments[0].scrollTo(0, 0);", places_wrapper)
@@ -89,7 +89,7 @@ class GMapsNavigator:
                         
                         if '\'' not in aria_label:
                             self.place_labels.append(aria_label)
-                        
+                
         except Exception as e:
             logger.error(f"Error capturing place labels: {e}")
             raise
@@ -114,6 +114,11 @@ class GMapsPlacesCrawler:
         self.navigator = GMapsNavigator(driver)
         self.places_data = []  # Initialize an empty list to store place data
         
+    def _get_places_wrapper(self) -> WebElement:
+        return WebDriverWait(self.driver, 10).until(
+            EC.visibility_of_element_located((By.XPATH, f"//div[@aria-label='Results for {SEARCH}']"))
+        )
+        
     def get_place_detail_wrapper(self, aria_label: str) -> WebElement:
         try:
             element = WebDriverWait(driver, 10).until(
@@ -130,20 +135,11 @@ class GMapsPlacesCrawler:
         except NoSuchElementException:
             places_wrapper = self._get_places_wrapper()
             driver.execute_script(f"arguments[0].scrollTo(0, 100);", places_wrapper)
+            logger.error(f"get_place_detail_wrapper not found: {aria_label}")
             # Handle or re-raise exception as needed after scrolling
             raise
             
-        
     def get_places(self):
-        try:
-            with open('places_data.json', 'r', encoding='utf-8') as file:
-                # Load existing data or initialize as empty list if file is empty
-                self.places_data = json.load(file) if file.read().strip() else []
-        except FileNotFoundError:
-            # If file doesn't exist, initialize as empty list
-            self.places_data = []
-        
-        
         try:
             self.navigator._capture_place_labels()
         
@@ -158,19 +154,18 @@ class GMapsPlacesCrawler:
                             logger.info(f"Processing place {aria_label}")
                             place_data = self.get_place_details(aria_label)
                             
-                            # Append the new place data and write to file each loop
-                            self.places_data.append(place_data)
-                            with open('places_data.json', 'w', encoding='utf-8') as file:
-                                json.dump(self.places_data, file, ensure_ascii=False, indent=4)
-                        break
+                            if place_data:
+                                self.places_data.append(place_data)
+                            break
+                                
                     except Exception as e:
-                        logger.error(f"An error occurred in get_places_details.")
+                        logger.error(f"An error occurred in get_places for {aria_label}.")
                         attempts += 1
-                        logger.info(f"Retrying... Attempt {attempts} of {max_attempts}")
-            
+                        logger.info(f"Retrying... Attempt {attempts} of {max_attempts} for {aria_label}")
+
             # Write the data to a JSON file
             with open('places_data.json', 'w', encoding='utf-8') as file:
-                json.dump(place_data, file, ensure_ascii=False, indent=4)
+                json.dump(self.places_data, file, ensure_ascii=False, indent=4)
             
         except Exception as e:
             logger.error(f"An error occurred during get_places processing: {aria_label}")
@@ -286,14 +281,22 @@ class GMapsPlacesCrawler:
         script = """
         var reviews = arguments[0].querySelectorAll('div[data-review-id]');
         var reviewDetails = [];
+        var seenReviewIds = new Set();  // Set to keep track of seen review IDs
+        
         reviews.forEach(function(review) {
-            var ratingSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(1) > span:nth-child(1)');
-            var rating = ratingSpan ? ratingSpan.getAttribute('aria-label') : '';
-            var reviewTimeSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(1) > span:nth-child(2)');
-            var reviewTime = reviewTimeSpan ? reviewTimeSpan.innerText.trim() : '';
-            var contentSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(2) > div > span');
-            var content = contentSpan ? contentSpan.innerText.trim() : '';
-            reviewDetails.push({rating, reviewTime, content});
+            var reviewId = review.getAttribute('data-review-id');
+            if (!seenReviewIds.has(reviewId)) {
+                seenReviewIds.add(reviewId);
+
+                var ratingSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(1) > span:nth-child(1)');
+                var rating = ratingSpan ? ratingSpan.getAttribute('aria-label') : '';
+                var reviewTimeSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(1) > span:nth-child(2)');
+                var reviewTime = reviewTimeSpan ? reviewTimeSpan.innerText.trim() : '';
+                var contentSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(2) > div > span');
+                var content = contentSpan ? contentSpan.innerText.trim() : '';
+
+                reviewDetails.push({rating, reviewTime, content});
+            }
         });
         return reviewDetails;
         """
@@ -363,6 +366,9 @@ class GMapsPlacesCrawler:
             
             # Use JavaScript to get all review details at once
             review_details = self.get_all_review_details_js(driver, reviews_container)
+            
+            # for i, detail in enumerate(review_details):
+            #     logger.info(f"Review {i+1}: {detail}")
             
             for i, detail in enumerate(review_details):
                 try:
