@@ -1,5 +1,6 @@
 import logging
 import time
+import json
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
@@ -12,6 +13,7 @@ from maps_scraper.config import settings
 
 from selenium.common.exceptions import TimeoutException
 from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import StaleElementReferenceException
 
 SEARCH = input("Enter the search term for Google Maps: ")
 LATITUDE = 21.020833
@@ -53,18 +55,19 @@ class GMapsNavigator:
             last_height = self.driver.execute_script("return arguments[0].scrollHeight", places_wrapper)
             
             scroll_count = 0  # Counter to limit the number of scrolls
-            max_scrolls = 5   # Maximum number of scrolls for testing; adjust as needed
+            max_scrolls = 4   # Maximum number of scrolls for testing; adjust as needed
             
             while True:
                 self.driver.execute_script("arguments[0].scrollTo(0, arguments[0].scrollHeight);", places_wrapper)
                 try:
-                    WebDriverWait(self.driver, 10).until(
+                    WebDriverWait(self.driver, 3).until(
                         lambda d: d.execute_script("return arguments[0].scrollHeight", places_wrapper) > last_height
                     )
                 except TimeoutException:
                     self.scroll_up_slightly()
 
                 new_height = self.driver.execute_script("return arguments[0].scrollHeight", places_wrapper)
+                # or scroll_count >= max_scrolls
                 if new_height == last_height or scroll_count >= max_scrolls: 
                     break
                 last_height = new_height
@@ -83,9 +86,10 @@ class GMapsNavigator:
                     aria_labels = div.find_elements(By.CSS_SELECTOR, "a[aria-label]")
                     if aria_labels:
                         aria_label = aria_labels[0].get_attribute("aria-label")
-                        escaped_aria_label = aria_label.replace("'", "\\'").replace('"', '\\"').replace("\\", "\\\\")  # Escape quotes
-                        self.place_labels.append(escaped_aria_label)
-                    
+                        
+                        if '\'' not in aria_label:
+                            self.place_labels.append(aria_label)
+                        
         except Exception as e:
             logger.error(f"Error capturing place labels: {e}")
             raise
@@ -94,23 +98,6 @@ class GMapsNavigator:
     def has_next_place(self) -> bool:
         return self.place_idx < len(self.place_labels)
 
-    def focus_and_get_next_place_element(self) -> WebElement:
-        if not self.has_next_place:
-            raise StopIteration()
-        
-        aria_label = self.place_labels[self.place_idx]
-        self.place_idx += 1
-        
-        try:
-            selected_div = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, f"//div[@aria-label='{aria_label}']"))
-            )
-            selected_div.click()
-            return selected_div
-                    
-        except NoSuchElementException:
-            raise StopIteration()
-        
     def scroll_up_slightly(self):
         scroll_amount = -100
         self.driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
@@ -120,37 +107,78 @@ class GMapsNavigator:
         return self
 
     def __next__(self) -> WebElement:
-        return self.focus_and_get_next_place_element()
+        return True
 
 class GMapsPlacesCrawler:
     def __init__(self, driver) -> None:
         self.navigator = GMapsNavigator(driver)
         self.places_data = []  # Initialize an empty list to store place data
-                
+        
+    def get_place_detail_wrapper(self, aria_label: str) -> WebElement:
+        try:
+            element = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, f"//a[@aria-label='{aria_label}']"))
+            )
+            driver.execute_script("arguments[0].scrollIntoView(true);", element)
+            element.click()
+            
+            review_element = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, f"//div[@aria-label='{aria_label}']"))
+            )
+            return review_element
+
+        except NoSuchElementException:
+            places_wrapper = self._get_places_wrapper()
+            driver.execute_script(f"arguments[0].scrollTo(0, 100);", places_wrapper)
+            # Handle or re-raise exception as needed after scrolling
+            raise
+            
+        
     def get_places(self):
         try:
-            # Capture aria-labels before starting the loop
+            with open('places_data.json', 'r', encoding='utf-8') as file:
+                # Load existing data or initialize as empty list if file is empty
+                self.places_data = json.load(file) if file.read().strip() else []
+        except FileNotFoundError:
+            # If file doesn't exist, initialize as empty list
+            self.places_data = []
+        
+        
+        try:
             self.navigator._capture_place_labels()
-            
+        
             for aria_label in self.navigator.place_labels:
-                # Use the aria-label to find and click the a tag
-                element = driver.find_element(By.XPATH, f"//a[@aria-label='{aria_label}']")
-                driver.execute_script("arguments[0].click();", element)
-                
-                logger.info(f"Processing place {aria_label}")
-                
-                place_data = self.get_place_details(aria_label)
-                
+            # Use the aria-label to find and click the a tag
+                attempts = 0
+                max_attempts = 2
+                while attempts < max_attempts:
+                    try:
+                        place_detail_wrapper = self.get_place_detail_wrapper(aria_label) 
+                        if place_detail_wrapper:
+                            logger.info(f"Processing place {aria_label}")
+                            place_data = self.get_place_details(aria_label)
+                            
+                            # Append the new place data and write to file each loop
+                            self.places_data.append(place_data)
+                            with open('places_data.json', 'w', encoding='utf-8') as file:
+                                json.dump(self.places_data, file, ensure_ascii=False, indent=4)
+                        break
+                    except Exception as e:
+                        logger.error(f"An error occurred in get_places_details.")
+                        attempts += 1
+                        logger.info(f"Retrying... Attempt {attempts} of {max_attempts}")
+            
+            # Write the data to a JSON file
+            with open('places_data.json', 'w', encoding='utf-8') as file:
+                json.dump(place_data, file, ensure_ascii=False, indent=4)
+            
         except Exception as e:
-            logger.error(f"An error occurred during place processing: {e}")
-            
-            
+            logger.error(f"An error occurred during get_places processing: {aria_label}")
+        
     def refresh_place_detail_wrapper(self, aria_label: str) -> WebElement:
         return driver.find_element(By.XPATH, f"//div[@aria-label='{aria_label}']")
         
     def get_place_details(self, aria_label: str):
-        # self.wait_place_detail_shows(aria_label)
-        
         # Initialize default values for place data
         place_name, address, business_hours, phone_number, photo_link, rate, reviews = '', '', {}, '', '', '', []
     
@@ -175,14 +203,8 @@ class GMapsPlacesCrawler:
         place_log = Place(place_name, address, business_hours, phone_number, photo_link, rate, reviews)
         logger.info(place_log)
         
-        
         return place
         
-    def wait_place_detail_shows(self, aria_label: str):
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, f"//div[@aria-label='{aria_label}']//h1[text() != '']"))
-        )
-
     def get_place_name(self, aria_label: str) -> str:
         place_detail_wrapper = self.refresh_place_detail_wrapper(aria_label)
         place_name_element = place_detail_wrapper.find_element(By.TAG_NAME, "h1")
@@ -265,19 +287,17 @@ class GMapsPlacesCrawler:
         var reviews = arguments[0].querySelectorAll('div[data-review-id]');
         var reviewDetails = [];
         reviews.forEach(function(review) {
-            var reviewerName = review.getAttribute('aria-label');
             var ratingSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(1) > span:nth-child(1)');
             var rating = ratingSpan ? ratingSpan.getAttribute('aria-label') : '';
             var reviewTimeSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(1) > span:nth-child(2)');
             var reviewTime = reviewTimeSpan ? reviewTimeSpan.innerText.trim() : '';
             var contentSpan = review.querySelector('div > div > div:nth-child(4) > div:nth-child(2) > div > span');
             var content = contentSpan ? contentSpan.innerText.trim() : '';
-            reviewDetails.push({reviewerName, rating, reviewTime, content});
+            reviewDetails.push({rating, reviewTime, content});
         });
         return reviewDetails;
         """
         return driver.execute_script(script, reviews_container) 
-        
         
     def get_review(self, aria_label: str) -> tuple[str, str]:
         reviews = []
@@ -286,41 +306,60 @@ class GMapsPlacesCrawler:
         try:
             place_detail_wrapper = self.refresh_place_detail_wrapper(aria_label)
             
-            reviews_button = place_detail_wrapper.find_element(By.XPATH, f".//button[@aria-label='Reviews for {aria_label}']")
+            reviews_button = WebDriverWait(place_detail_wrapper, 2).until(
+                EC.element_to_be_clickable((By.XPATH, f".//button[@aria-label='Reviews for {aria_label}']"))
+            )
             reviews_button.click()
           
-            rating_div = WebDriverWait(driver, 10).until(
-                EC.visibility_of_element_located((By.XPATH, ".//div[@class='fontDisplayLarge']"))
-            )
-            rate = rating_div.text.strip()
+            while True:
+                try:
+                    rating_div = WebDriverWait(driver, 3).until(
+                        EC.visibility_of_element_located((By.XPATH, ".//div[@class='fontDisplayLarge']"))
+                    )
+                    rate = rating_div.text.strip()
+                    break
+                except StaleElementReferenceException:
+                    # logger.error("Stale element reference when accessing rating_div.")
+                    continue
             
             def find_scrollable_container():
-                return driver.find_element(By.XPATH, f"//div[@aria-label='{aria_label}']/div[3]")
-            
+                try:
+                    scrollable_container = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, f"//div[@aria-label='{aria_label}']/div[3]"))
+                    )
+                    return scrollable_container
+                except Exception as e:
+                    logging.error(f"Error finding scrollable container.")
+                
             # Scroll to the bottom of the scrollable reviews container
-            scrollable_reviews_container = find_scrollable_container()
-            last_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_reviews_container)
+            last_height = driver.execute_script("return arguments[0].scrollHeight", find_scrollable_container())
             
             while True:
-                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable_reviews_container)
-                time.sleep(1)  # Sleep to allow loading of new elements
+                try:
+                    scrollable_container = find_scrollable_container()
+                    driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable_container)
+                    time.sleep(1)  # Sleep to allow loading of new elements
 
-                # Reacquire the scrollable container to avoid StaleElementReferenceException
-                scrollable_reviews_container = find_scrollable_container()
-                new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_reviews_container)
-                
-                if new_height == last_height:
-                    break
-                last_height = new_height
+                    new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_container)
+                    
+                    if new_height == last_height:
+                        break
+                    last_height = new_height
+                except StaleElementReferenceException:
+                    continue  # Retry loop with fresh element
             
             # Click all 'More' buttons in batch
-            more_buttons = scrollable_reviews_container.find_elements(By.XPATH, ".//button[@aria-label='See more']")
+            more_buttons = find_scrollable_container().find_elements(By.XPATH, ".//button[@aria-label='See more']")
             for button in more_buttons:
                 driver.execute_script("arguments[0].click();", button)
             
             # Extract reviews from the 8th child of scrollable_reviews_container
-            reviews_container = find_scrollable_container().find_element(By.XPATH, "./div[8]")
-            review_elements = reviews_container.find_elements(By.XPATH, "./div[@data-review-id]")
+            try:
+                reviews_container = WebDriverWait(find_scrollable_container(), 5).until(
+                    EC.visibility_of_element_located((By.XPATH, "./div[8]"))
+                )
+            except Exception as e:
+                logging.error("Timeout waiting for the reviews container to be visible.")
             
             # Use JavaScript to get all review details at once
             review_details = self.get_all_review_details_js(driver, reviews_container)
@@ -328,37 +367,32 @@ class GMapsPlacesCrawler:
             for i, detail in enumerate(review_details):
                 try:
                     # Extract each detail from the JavaScript output
-                    reviewer_name = detail['reviewerName']
                     rating = detail['rating']
                     review_time = detail['reviewTime']
                     review_content = detail['content']
                     
-                    
                     reviews.append({
-                        "reviewer_name": reviewer_name,
                         "review_time": review_time,
                         "rating": rating,
                         "review_content": review_content
                     })
                     
-                    logging.info(f"Processed review {i+1}/{len(review_elements)}")
-                    
                 except NoSuchElementException as e:
                     logging.warning(f"An error with review {i+1} was found. Skipping this review. {e}. ")
 
         except NoSuchElementException:
-            logging.error("Reviews button not found.")
+            logging.error("Element not found.")
         except TimeoutException:
             logging.error("Timeout waiting for reviews to be visible.")
         except Exception as e:
-            logging.error("An error occurred: {}".format(e))
+            logging.error("An error occurred in get_review.")
 
         logging.info("Completed getting reviews. Total reviews: {}".format(len(reviews)))
         return rate, reviews
 
 if __name__ == "__main__": 
     logger.info("[bold yellow]== * Running Gmaps Scraper ==[/]", extra={"markup": True})
-    logger.info("[yellow]Settings:[/yellow] %s", settings.dict(), extra={"markup": True})
+    settings.dict()
     driver = create_driver()
     driver.get(FINAL_URL)
 
